@@ -16,6 +16,16 @@ FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
 # confirm and 0.5s attach polls, and forking uname per call is a measurable cost on
 # the platform (Git Bash/MSYS) that already pays the highest fork price.
 _FM_UNAME=$(uname 2>/dev/null || echo unknown)
+# The claim lock is an `ln -s` owner link, but Git Bash's default MSYS mode makes
+# `ln -s` copy its target instead, so the claim never sees a symlink and spins.
+case "$_FM_UNAME" in
+  MINGW*|MSYS*)
+    case " ${MSYS:-} " in
+      *' winsymlinks:'*) ;;
+      *) export MSYS="${MSYS:+$MSYS }winsymlinks:nativestrict" ;;
+    esac
+    ;;
+esac
 mkdir -p "$STATE"
 
 # Most wake-library consumers need only queue and lock primitives, including
