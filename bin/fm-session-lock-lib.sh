@@ -121,7 +121,7 @@ _FM_PROC_SNAPSHOT_TAKEN=0
 _fm_proc_snapshot() {
   local pid ppid exe args d win
   [ "$_FM_PROC_SNAPSHOT_TAKEN" -eq 1 ] && return 0
-  while IFS=$'	' read -r pid ppid exe args; do
+  while IFS=$'\t' read -r pid ppid exe args; do
     args=${args%$'\r'}
     _FM_PROC_PPID[$pid]=$ppid
     _FM_PROC_EXE[$pid]=$exe
@@ -147,11 +147,9 @@ fm_proc_self_pid() {
   local win
   if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
     read -r win 2>/dev/null < "/proc/$$/winpid" || return 1
-    printf '%s
-' "$win"
+    printf '%s\n' "$win"
   else
-    printf '%s
-' "$$"
+    printf '%s\n' "$$"
   fi
 }
 fm_proc_comm() {  # <pid>
@@ -160,8 +158,7 @@ fm_proc_comm() {  # <pid>
     _fm_proc_snapshot || return 1
     [ -n "${_FM_PROC_PPID[$1]+set}" ] || return 1
     exe=${_FM_PROC_EXE[$1]//\\//}
-    printf '%s
-' "${exe%.[eE][xX][eE]}"
+    printf '%s\n' "${exe%.[eE][xX][eE]}"
   else
     ps -o comm= -p "$1" 2>/dev/null
   fi
@@ -170,8 +167,7 @@ fm_proc_args() {  # <pid>
   if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
     _fm_proc_snapshot || return 1
     [ -n "${_FM_PROC_PPID[$1]+set}" ] || return 1
-    printf '%s
-' "${_FM_PROC_ARGS[$1]}"
+    printf '%s\n' "${_FM_PROC_ARGS[$1]}"
   else
     ps -o args= -p "$1" 2>/dev/null
   fi
@@ -182,12 +178,10 @@ fm_proc_ppid() {  # <pid>
   if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
     _fm_proc_snapshot || return 1
     if [ -n "${_FM_PROC_MSYS_PARENT[$1]+set}" ]; then
-      printf '%s
-' "${_FM_PROC_MSYS_PARENT[$1]}"
+      printf '%s\n' "${_FM_PROC_MSYS_PARENT[$1]}"
     else
       [ -n "${_FM_PROC_PPID[$1]+set}" ] || return 1
-      printf '%s
-' "${_FM_PROC_PPID[$1]}"
+      printf '%s\n' "${_FM_PROC_PPID[$1]}"
     fi
   else
     ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '
