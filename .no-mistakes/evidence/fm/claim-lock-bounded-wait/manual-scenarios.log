@@ -1,0 +1,6 @@
+== A: wedged holder, FM_LOCK_CLAIM_WAIT=abc (falls back to 30s) ==
+error: session-lock claim (/tmp/tmp.ZsUCXH5Pzm/s1/.lock.acquire) still held after 30s by pid 946179 (sleep 120 ); if that process is a stuck leftover, stop it and rerun; operate read-only until resolved
+rc=1 elapsed=44s holder_alive=yes lockpid=946179 holder=946179
+== B: briefly contended claim (holder releases after 3s), WAIT=0 -> fallback 30 ==
+lock acquired: harness pid 39492
+rc=0 elapsed=14s session_lock_written=yes
