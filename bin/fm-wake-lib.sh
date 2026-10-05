@@ -591,6 +591,16 @@ fm_lock_claim() {
   return 0
 }
 
+# Without symlink privilege nativestrict refuses every link, so retry once in
+# the default MSYS symlink mode rather than leave every lock unobtainable.
+fm_lock_link() {  # <target> <link>
+  ln -s "$1" "$2" 2>/dev/null && return 0
+  case " ${MSYS:-} " in
+    *' winsymlinks:nativestrict '*) MSYS="${MSYS//winsymlinks:nativestrict/}" ln -s "$1" "$2" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
@@ -603,7 +613,7 @@ fm_lock_try_create() {
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
-  if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+  if fm_lock_link "$ownerdir" "$lockdir" && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
       FM_LOCK_OWNER_DIR=$ownerdir
       return 0

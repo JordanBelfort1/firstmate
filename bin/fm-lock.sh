@@ -78,20 +78,18 @@ LOCK_LINE_PRE=
 # FM_LOCK_CLAIM_WAIT seconds is wedged (e.g. an orphaned fm-lock.sh). Refuse,
 # naming that holder, instead of blocking session start until its own deadline.
 acquire_claim_lock_or_refuse() {
-  local rc=0 holder cmd='' wait=${FM_LOCK_CLAIM_WAIT:-30}
+  local rc=0 holder='' win cmd='' wait=${FM_LOCK_CLAIM_WAIT:-30}
   case "$wait" in ''|*[!0-9]*|0) wait=30 ;; esac
   fm_lock_acquire_wait_bounded "$CLAIM_LOCK" "$wait" || rc=$?
   [ "$rc" -ne 0 ] || return 0
-  if [ "$rc" -ne 124 ]; then
-    fm_lock_acquire_wait "$CLAIM_LOCK"
-    return 0
-  fi
-  holder=${FM_LOCK_HELD_PID:-$(cat "$CLAIM_LOCK/pid" 2>/dev/null || true)}
+  [ "$rc" -ne 124 ] || holder=${FM_LOCK_HELD_PID:-}
   if [ -n "$holder" ]; then
-    if [ -r "/proc/$holder/cmdline" ]; then
-      cmd=$(tr '\0' ' ' < "/proc/$holder/cmdline" 2>/dev/null || true)
+    # On native Windows the snapshot is keyed by the holder's Windows pid.
+    if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
+      read -r win 2>/dev/null < "/proc/$holder/winpid" && cmd=$(fm_proc_args "$win" 2>/dev/null || true)
+    else
+      cmd=$(fm_proc_args "$holder" 2>/dev/null || true)
     fi
-    [ -n "$cmd" ] || cmd=$(ps -o args= -p "$holder" 2>/dev/null || true)
     echo "error: session-lock claim ($CLAIM_LOCK) still held after ${wait}s by pid $holder${cmd:+ ($cmd)}; if that process is a stuck leftover, stop it and rerun; operate read-only until resolved" >&2
   else
     echo "error: cannot acquire session-lock claim ($CLAIM_LOCK); operate read-only until resolved" >&2

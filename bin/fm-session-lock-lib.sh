@@ -119,15 +119,19 @@ _fm_proc_native_windows && FM_PROC_WINDOWS=1
 [ "$FM_PROC_WINDOWS" -eq 0 ] || declare -gA _FM_PROC_PPID=() _FM_PROC_EXE=() _FM_PROC_ARGS=() _FM_PROC_MSYS_PARENT=()
 _FM_PROC_SNAPSHOT_TAKEN=0
 _fm_proc_snapshot() {
-  local pid ppid exe args d win
+  local pid ppid exe args d win out
   [ "$_FM_PROC_SNAPSHOT_TAKEN" -eq 1 ] && return 0
+  # A failed or truncated query is unknown, never "missing pid = dead": demand a
+  # clean exit and this shell's own Windows pid in the result.
+  read -r win 2>/dev/null < "/proc/$$/winpid" || return 1
+  out=$(powershell.exe -NoProfile -NonInteractive -Command     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object { "{0}`t{1}`t{2}`t{3}" -f $_.ProcessId,$_.ParentProcessId,$_.ExecutablePath,($_.CommandLine -replace "[`r`n`t]"," ") }'     2>/dev/null) || return 1
+  case $'\n'"$out" in *$'\n'"$win"$'\t'*) ;; *) return 1 ;; esac
   while IFS=$'\t' read -r pid ppid exe args; do
     args=${args%$'\r'}
     _FM_PROC_PPID[$pid]=$ppid
     _FM_PROC_EXE[$pid]=$exe
     _FM_PROC_ARGS[$pid]=$args
-  done < <(powershell.exe -NoProfile -NonInteractive -Command     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object { "{0}`t{1}`t{2}`t{3}" -f $_.ProcessId,$_.ParentProcessId,$_.ExecutablePath,($_.CommandLine -replace "[`r`n`t]"," ") }'     2>/dev/null)
-  [ "${#_FM_PROC_PPID[@]}" -gt 0 ] || return 1
+  done <<< "$out"
   for d in /proc/[0-9]*; do
     read -r win 2>/dev/null < "$d/winpid" || continue
     read -r ppid 2>/dev/null < "$d/ppid" || continue
