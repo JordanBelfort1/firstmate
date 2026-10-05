@@ -471,6 +471,9 @@ fm_session_lock_inspect() {  # <state>
       return 0
       ;;
   esac
+  # A failed Windows process snapshot proves nothing about the holder, so it
+  # must not read as a dead owner.
+  _fm_proc_prime || return 0
   if fm_proc_alive "$pid"; then
     if fm_harness_pid_alive "$pid"; then
       FM_LOCK_INSPECT_STATE=held
