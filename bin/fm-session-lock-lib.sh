@@ -98,6 +98,110 @@ fm_harness_process_matches() {  # <comm> <args>
   return 1
 }
 
+# --- process queries ---------------------------------------------------------
+# Every ancestry and liveness read below goes through these helpers.
+# Elsewhere they are plain `ps -o` and `kill -0`. On native Windows (Git Bash or
+# MSYS) the harness is an ordinary Windows process that the MSYS process table
+# never shows, and MSYS ps rejects -o, so there the helpers read one Windows
+# process snapshot instead and every pid is a Windows pid: the walk starts from
+# this shell's /proc/$$/winpid, and Claude Code's CLAUDE_PID is already one.
+_fm_proc_native_windows() {
+  case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) ;; *) return 1 ;; esac
+  ! ps -o comm= -p $$ >/dev/null 2>&1
+}
+FM_PROC_WINDOWS=0
+_fm_proc_native_windows && FM_PROC_WINDOWS=1
+
+# One Windows process snapshot, indexed by Windows pid: parent pid, executable
+# path, and command line, plus the Windows pid of each MSYS process's MSYS
+# parent. Taken once per shell, so an entry point primes it and the command
+# substitutions below inherit it instead of paying for their own.
+declare -A _FM_PROC_PPID=() _FM_PROC_EXE=() _FM_PROC_ARGS=() _FM_PROC_MSYS_PARENT=()
+_FM_PROC_SNAPSHOT_TAKEN=0
+_fm_proc_snapshot() {
+  local pid ppid exe args d win
+  [ "$_FM_PROC_SNAPSHOT_TAKEN" -eq 1 ] && return 0
+  while IFS=$'	' read -r pid ppid exe args; do
+    args=${args%$''}
+    _FM_PROC_PPID[$pid]=$ppid
+    _FM_PROC_EXE[$pid]=$exe
+    _FM_PROC_ARGS[$pid]=$args
+  done < <(powershell.exe -NoProfile -NonInteractive -Command     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object { "{0}`t{1}`t{2}`t{3}" -f $_.ProcessId,$_.ParentProcessId,$_.ExecutablePath,($_.CommandLine -replace "[`r`n`t]"," ") }'     2>/dev/null)
+  [ "${#_FM_PROC_PPID[@]}" -gt 0 ] || return 1
+  for d in /proc/[0-9]*; do
+    read -r win 2>/dev/null < "$d/winpid" || continue
+    read -r ppid 2>/dev/null < "$d/ppid" || continue
+    [ "$ppid" -gt 1 ] 2>/dev/null || continue
+    read -r ppid 2>/dev/null < "/proc/$ppid/winpid" || continue
+    _FM_PROC_MSYS_PARENT[$win]=$ppid
+  done
+  _FM_PROC_SNAPSHOT_TAKEN=1
+}
+# Take the snapshot up front when the helpers will need it.
+_fm_proc_prime() {
+  [ "$FM_PROC_WINDOWS" -eq 0 ] || _fm_proc_snapshot
+}
+
+# Print the pid the ancestry walk starts from.
+fm_proc_self_pid() {
+  local win
+  if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
+    read -r win 2>/dev/null < "/proc/$$/winpid" || return 1
+    printf '%s
+' "$win"
+  else
+    printf '%s
+' "$$"
+  fi
+}
+fm_proc_comm() {  # <pid>
+  local exe
+  if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
+    _fm_proc_snapshot || return 1
+    [ -n "${_FM_PROC_PPID[$1]+set}" ] || return 1
+    exe=${_FM_PROC_EXE[$1]//\\//}
+    printf '%s
+' "${exe%.[eE][xX][eE]}"
+  else
+    ps -o comm= -p "$1" 2>/dev/null
+  fi
+}
+fm_proc_args() {  # <pid>
+  if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
+    _fm_proc_snapshot || return 1
+    [ -n "${_FM_PROC_PPID[$1]+set}" ] || return 1
+    printf '%s
+' "${_FM_PROC_ARGS[$1]}"
+  else
+    ps -o args= -p "$1" 2>/dev/null
+  fi
+}
+# An MSYS process's Windows parent can be a launcher that already exited, so
+# while the pid belongs to an MSYS process, its MSYS parent wins.
+fm_proc_ppid() {  # <pid>
+  if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
+    _fm_proc_snapshot || return 1
+    if [ -n "${_FM_PROC_MSYS_PARENT[$1]+set}" ]; then
+      printf '%s
+' "${_FM_PROC_MSYS_PARENT[$1]}"
+    else
+      [ -n "${_FM_PROC_PPID[$1]+set}" ] || return 1
+      printf '%s
+' "${_FM_PROC_PPID[$1]}"
+    fi
+  else
+    ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '
+  fi
+}
+fm_proc_alive() {  # <pid>
+  if [ "$FM_PROC_WINDOWS" -eq 1 ]; then
+    _fm_proc_snapshot || return 1
+    [ -n "${_FM_PROC_PPID[$1]+set}" ]
+  else
+    kill -0 "$1" 2>/dev/null
+  fi
+}
+
 # Walk the current process ancestry (up to 16 hops) and print this session's
 # contiguous verified-harness ancestry, innermost pid first.
 #
@@ -117,10 +221,12 @@ fm_harness_process_matches() {  # <comm> <args>
 # session cannot be read off the ancestry at all, so the whole contiguous run is
 # reported and the callers below decide what they need from it.
 fm_harness_ancestry_pids() {
-  local pid=$$ comm args extending=0 printed=0
+  local pid comm args extending=0 printed=0
+  _fm_proc_prime || return 1
+  pid=$(fm_proc_self_pid) || return 1
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
-    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    comm=$(fm_proc_comm "$pid") || break
+    args=$(fm_proc_args "$pid")
     if fm_harness_process_matches "$comm" "$args"; then
       printf '%s\n' "$pid"
       printed=1
@@ -129,7 +235,7 @@ fm_harness_ancestry_pids() {
     elif [ "$extending" -eq 1 ]; then
       break
     fi
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    pid=$(fm_proc_ppid "$pid")
     # Examine the top of the chain before stopping. Inside a PID namespace the
     # harness itself is pid 1, so stopping as soon as the next pid is 1 hides the
     # very process this walk exists to find. A host's real pid 1 (init, systemd,
@@ -166,9 +272,10 @@ EOF
 # True if $1 is a live process that looks like a verified harness.
 fm_harness_pid_alive() {
   local pid=$1 comm args
-  kill -0 "$pid" 2>/dev/null || return 1
-  comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  _fm_proc_prime || return 1
+  fm_proc_alive "$pid" || return 1
+  comm=$(fm_proc_comm "$pid") || return 1
+  args=$(fm_proc_args "$pid")
   fm_harness_process_matches "$comm" "$args"
 }
 
@@ -200,6 +307,7 @@ fm_harness_pid_alive() {
 # need not walk again.
 fm_session_lock_trusted_session_id() {  # [<ancestry-pids>]
   local id=${CLAUDE_CODE_SESSION_ID:-} claude_pid=${CLAUDE_PID:-} pids=${1:-} pid comm args
+  _fm_proc_prime || return 1
   [ -n "$id" ] || return 1
   case "$id" in *$'\n'*|*$'\r'*) return 1 ;; esac
   case "$claude_pid" in ''|*[!0-9]*) return 1 ;; esac
@@ -208,8 +316,8 @@ fm_session_lock_trusted_session_id() {  # [<ancestry-pids>]
   fi
   while IFS= read -r pid; do
     [ "$pid" = "$claude_pid" ] || continue
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    comm=$(fm_proc_comm "$pid") || return 1
+    args=$(fm_proc_args "$pid")
     fm_harness_process_matches "$comm" "$args" || return 1
     [ "$FM_HARNESS_IS_CLAUDE" -eq 1 ] || return 1
     printf '%s\n' "$id"
@@ -253,6 +361,7 @@ fm_session_lock_same_session() {  # <state> [<ancestry-pids>]
 # outermost pid of its contiguous run, exactly as before.
 fm_session_lock_anchor_pid() {
   local pids
+  _fm_proc_prime || return 1
   pids=$(fm_harness_ancestry_pids) || return 1
   if fm_session_lock_trusted_session_id "$pids" >/dev/null; then
     printf '%s\n' "$CLAUDE_PID"
@@ -275,6 +384,7 @@ fm_session_lock_anchor_pid() {
 # an ancestry that cannot be resolved all fail closed.
 fm_session_lock_owned_by_self() {
   local state=$1 lock_pid pids pid
+  _fm_proc_prime || return 1
   lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
   case "$lock_pid" in
     ''|*[!0-9]*) return 1 ;;
@@ -298,6 +408,7 @@ EOF
 FM_SESSION_LOCK_FOREIGN_OWNER_PID=
 fm_session_lock_foreign_owner_live() {
   local state=$1 lock_pid pids pid
+  _fm_proc_prime || return 1
   FM_SESSION_LOCK_FOREIGN_OWNER_PID=
   [ -f "$state/.lock" ] && [ ! -L "$state/.lock" ] || return 1
   lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
@@ -366,7 +477,7 @@ fm_session_lock_inspect() {  # <state>
       return 0
       ;;
   esac
-  if kill -0 "$pid" 2>/dev/null; then
+  if fm_proc_alive "$pid"; then
     if fm_harness_pid_alive "$pid"; then
       FM_LOCK_INSPECT_STATE=held
       FM_LOCK_INSPECT_LIVE_HARNESS=true
@@ -376,7 +487,7 @@ fm_session_lock_inspect() {  # <state>
     fi
     return 0
   fi
-  if ps -o comm= -p "$pid" >/dev/null 2>&1; then
+  if fm_proc_comm "$pid" >/dev/null; then
     FM_LOCK_INSPECT_STATE=unknown
     return 0
   fi
