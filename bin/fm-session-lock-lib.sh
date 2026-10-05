@@ -116,13 +116,13 @@ _fm_proc_native_windows && FM_PROC_WINDOWS=1
 # path, and command line, plus the Windows pid of each MSYS process's MSYS
 # parent. Taken once per shell, so an entry point primes it and the command
 # substitutions below inherit it instead of paying for their own.
-declare -A _FM_PROC_PPID=() _FM_PROC_EXE=() _FM_PROC_ARGS=() _FM_PROC_MSYS_PARENT=()
+[ "$FM_PROC_WINDOWS" -eq 0 ] || declare -A _FM_PROC_PPID=() _FM_PROC_EXE=() _FM_PROC_ARGS=() _FM_PROC_MSYS_PARENT=()
 _FM_PROC_SNAPSHOT_TAKEN=0
 _fm_proc_snapshot() {
   local pid ppid exe args d win
   [ "$_FM_PROC_SNAPSHOT_TAKEN" -eq 1 ] && return 0
   while IFS=$'	' read -r pid ppid exe args; do
-    args=${args%$''}
+    args=${args%$'\r'}
     _FM_PROC_PPID[$pid]=$ppid
     _FM_PROC_EXE[$pid]=$exe
     _FM_PROC_ARGS[$pid]=$args
