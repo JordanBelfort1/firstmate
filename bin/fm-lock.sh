@@ -74,6 +74,25 @@ LOCK_SESSION_PHASE=0
 LOCK_SESSION_KIND=0
 LOCK_SESSION_PREV="$STATE/.lock-session.prev"
 LOCK_LINE_PRE=
+# The claim lock guards a few file writes, so a holder that keeps it past
+# FM_LOCK_CLAIM_WAIT seconds is wedged (e.g. an orphaned fm-lock.sh). Refuse,
+# naming that holder, instead of blocking session start until its own deadline.
+acquire_claim_lock_or_refuse() {
+  local rc=0 holder cmd=''
+  fm_lock_acquire_wait_bounded "$CLAIM_LOCK" "${FM_LOCK_CLAIM_WAIT:-30}" || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  holder=${FM_LOCK_HELD_PID:-$(cat "$CLAIM_LOCK/pid" 2>/dev/null || true)}
+  if [ -n "$holder" ]; then
+    if [ -r "/proc/$holder/cmdline" ]; then
+      cmd=$(tr '\0' ' ' < "/proc/$holder/cmdline" 2>/dev/null || true)
+    fi
+    [ -n "$cmd" ] || cmd=$(ps -o args= -p "$holder" 2>/dev/null || true)
+    echo "error: session-lock claim ($CLAIM_LOCK) still held after ${FM_LOCK_CLAIM_WAIT:-30}s by pid $holder${cmd:+ ($cmd)}; if that process is a stuck leftover, stop it and rerun; operate read-only until resolved" >&2
+  else
+    echo "error: cannot acquire session-lock claim ($CLAIM_LOCK); operate read-only until resolved" >&2
+  fi
+  exit 1
+}
 release_claim_lock() {
   if [ "$CLAIM_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$CLAIM_LOCK"
@@ -161,7 +180,7 @@ publish_lock_session_or_die() {
 confirm_own_lock() {  # <recorded-pid>
   local recorded waited=0
   if [ "$CLAIM_LOCK_HELD" -ne 1 ]; then
-    fm_lock_acquire_wait "$CLAIM_LOCK"
+    acquire_claim_lock_or_refuse
     CLAIM_LOCK_HELD=1
     waited=1
   fi
@@ -206,7 +225,7 @@ if ! fm_lock_try_acquire "$CLAIM_LOCK"; then
     echo "error: the prior session's bounded startup sweep is finishing; operate read-only until it releases the fleet lock" >&2
     exit 1
   fi
-  fm_lock_acquire_wait "$CLAIM_LOCK"
+  acquire_claim_lock_or_refuse
 fi
 CLAIM_LOCK_HELD=1
 
